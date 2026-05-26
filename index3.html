@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>互动答题抽奖 - 观众端</title>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --success: #16a34a;
+            --bg: #f8fafc;
+            --text: #1e293b;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); padding: 16px; display: flex; flex-direction: column; min-height: 100vh; }
+        
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; background: white; padding: 12px 16px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .user-badge { background: #e2e8f0; padding: 4px 10px; border-radius: 20px; font-size: 13px; font-weight: 600; color: #475569; }
+        .status-dot { width: 8px; height: 8px; background: #94a3b8; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .status-online { background: var(--success); }
+
+        .card { background: white; border-radius: 16px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); flex-grow: 1; display: flex; flex-direction: column; justify-content: center; }
+        .waiting-state { text-align: center; color: #64748b; padding: 40px 0; }
+        .question-title { font-size: 18px; font-weight: bold; line-height: 1.5; margin-bottom: 20px; color: #0f172a; }
+        
+        .options-group { display: flex; flex-direction: column; gap: 14px; width: 100%; }
+        .option-btn { width: 100%; border: 2px solid #e2e8f0; background: white; padding: 16px; border-radius: 12px; text-align: left; font-size: 16px; font-weight: 500; color: var(--text); cursor: pointer; transition: all 0.2s; }
+        .option-btn:active:not(:disabled) { background: #f1f5f9; transform: scale(0.99); }
+        .option-btn.selected { border-color: var(--primary); background: #eff6ff; color: var(--primary); font-weight: 600; }
+        .option-btn:disabled { cursor: not-allowed; opacity: 0.8; }
+        
+        .submit-btn { margin-top: 24px; width: 100%; background: var(--primary); color: white; border: none; padding: 14px; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 12px rgba(37, 99, 215, 0.2); transition: all 0.2s; }
+        .submit-btn:disabled { background: #cbd5e1; box-shadow: none; cursor: not-allowed; }
+
+        .total-badge { text-align: center; margin-top: 20px; font-size: 14px; color: #64748b; background: #f1f5f9; padding: 10px; border-radius: 8px; font-weight: 500; }
+
+        /* 编号强制弹窗样式 */
+        .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15, 23, 42, 0.85); display: flex; align-items: center; justify-content: center; z-index: 999; padding: 24px; }
+        .modal-box { background: white; width: 100%; max-width: 340px; border-radius: 20px; padding: 28px; text-align: center; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1); }
+        .modal-uid { font-size: 32px; font-weight: 800; color: #1e3a8a; background: #f0fdf4; border: 2px dashed #16a34a; padding: 12px; border-radius: 12px; margin: 18px 0; letter-spacing: 1px; }
+        .modal-btn { background: #16a34a; color: white; border: none; width: 100%; padding: 14px; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 12px rgba(22, 163, 74, 0.2); }
+    </style>
+</head>
+<body>
+
+    <div class="modal-overlay" id="uidModal">
+        <div class="modal-box">
+            <h3 style="font-size: 18px; color: #0f172a;">📢 欢迎参与现场互动</h3>
+            <p style="font-size: 14px; color: #64748b; margin-top: 6px;">您的本次游戏中唯一编号如下：</p>
+            <div class="modal-uid" id="modalUidDisplay">------</div>
+            <p style="font-size: 13px; color: #ef4444; margin-bottom: 20px; font-weight: 500;">⚠️ 请务必截图保存，用于中奖核对！</p>
+            <button class="modal-btn" onclick="confirmUidAndJoin()">我已截屏保存</button>
+        </div>
+    </div>
+
+    <div class="header">
+        <div><span class="status-dot" id="statusDot"></span><span id="statusText" style="font-size:14px; color:#64748b;">连接中...</span></div>
+        <div class="user-badge" id="userBadge">编号: ----</div>
+    </div>
+
+    <div class="card" id="mainCard">
+        <div class="waiting-state" id="waitingState">
+            <h2 style="margin-bottom: 10px; color:#334155;">现场互动即将开始</h2>
+            <p style="font-size: 14px;">请静候大屏幕或主持人发布题目...</p>
+        </div>
+
+        <div id="quizState" style="display: none;">
+            <div class="question-title" id="qTitle">加载中...</div>
+            <div class="options-group" id="optionsGroup">
+                </div>
+            <button class="submit-btn" id="submitBtn" onclick="submitAnswer()" disabled>提交答案</button>
+            <div class="total-badge" id="totalBadge" style="display: none;">本轮全场已提交：<span id="submitCount" style="color:var(--primary); font-weight:bold;">0</span> 人</div>
+        </div>
+    </div>
+
+    <script>
+        const MQTT_SERVER = "wss://broker.emqx.io:8084/mqtt";
+        const TOPIC_PREFIX = "LIVE_QUIZ_ROOM_8888_"; 
+        
+        let userId = localStorage.getItem('quiz_uid_v3');
+        let isFirstTime = false;
+
+        if (!userId) {
+            userId = 'U' + Math.floor(100000 + Math.random() * 900000);
+            localStorage.setItem('quiz_uid_v3', userId);
+            isFirstTime = true;
+        }
+
+        document.getElementById('userBadge').innerText = `编号: ${userId}`;
+        document.getElementById('modalUidDisplay').innerText = userId;
+
+        // 如果本地已经点击过“我已截屏”，直接隐藏弹窗，否则强制展示
+        if (localStorage.getItem('quiz_uid_confirmed') === 'true') {
+            document.getElementById('uidModal').style.display = 'none';
+        }
+
+        let client = null;
+        let currentQuestionId = null;
+        let selectedOption = null;
+        let hasSubmitted = false;
+
+        function initMQTT() {
+            client = mqtt.connect(MQTT_SERVER, { clientId: userId });
+            
+            client.on('connect', () => {
+                document.getElementById('statusDot').classList.add('status-online');
+                document.getElementById('statusText').innerText = '已连接房间';
+                client.subscribe([TOPIC_PREFIX + 'question', TOPIC_PREFIX + 'results']);
+                
+                // 如果用户之前已经确认过注册，每次连上都自动发送一次报到消息确保计数完整
+                if (localStorage.getItem('quiz_uid_confirmed') === 'true') {
+                    sendJoinCheckin();
+                }
+            });
+
+            client.on('close', () => {
+                document.getElementById('statusDot').classList.remove('status-online');
+                document.getElementById('statusText').innerText = '断开重连中...';
+            });
+
+            client.on('message', (topic, message) => {
+                const data = JSON.parse(message.toString());
+                if (topic === TOPIC_PREFIX + 'question') {
+                    handleNewQuestion(data);
+                } else if (topic === TOPIC_PREFIX + 'results') {
+                    handleLiveStats(data);
+                }
+            });
+        }
+
+        // 观众点击确认截屏保存按钮
+        function confirmUidAndJoin() {
+            localStorage.setItem('quiz_uid_confirmed', 'true');
+            document.getElementById('uidModal').style.display = 'none';
+            sendJoinCheckin();
+        }
+
+        // 发送参与人身份核验报到消息
+        function sendJoinCheckin() {
+            if (client && client.connected) {
+                client.publish(TOPIC_PREFIX + 'join', JSON.stringify({ uid: userId }));
+            }
+        }
+
+        function handleNewQuestion(data) {
+            if (!data || !data.id) {
+                document.getElementById('waitingState').style.display = 'block';
+                document.getElementById('quizState').style.display = 'none';
+                currentQuestionId = null;
+                selectedOption = null;
+                hasSubmitted = false;
+                return;
+            }
+
+            if (currentQuestionId !== data.id) {
+                currentQuestionId = data.id;
+                selectedOption = null;
+                hasSubmitted = false;
+                
+                document.getElementById('waitingState').style.display = 'none';
+                document.getElementById('quizState').style.display = 'block';
+                document.getElementById('qTitle').innerText = data.title;
+                document.getElementById('submitBtn').disabled = true;
+                document.getElementById('submitBtn').innerText = '提交答案';
+                document.getElementById('totalBadge').style.display = 'none';
+
+                const group = document.getElementById('optionsGroup');
+                group.innerHTML = '';
+                ['A', 'B'].forEach(key => {
+                    if(data['opt' + key]) {
+                        group.innerHTML += `
+                            <button class="option-btn" id="btn_${key}" onclick="selectOption('${key}')">
+                                <span>${key}. ${data['opt' + key]}</span>
+                            </button>
+                        `;
+                    }
+                });
+            }
+        }
+
+        function selectOption(key) {
+            if (hasSubmitted) return;
+            selectedOption = key;
+            document.querySelectorAll('.option-btn').forEach(b => b.classList.remove('selected'));
+            document.getElementById(`btn_${key}`).classList.add('selected');
+            document.getElementById('submitBtn').disabled = false;
+        }
+
+        function submitAnswer() {
+            if (!currentQuestionId || !selectedOption || hasSubmitted) return;
+            hasSubmitted = true;
+            document.getElementById('submitBtn').disabled = true;
+            document.getElementById('submitBtn').innerText = '本轮答案已提交，请看大屏';
+            
+            document.querySelectorAll('.option-btn').forEach(b => b.disabled = true);
+
+            const payload = {
+                qid: currentQuestionId,
+                uid: userId,
+                option: selectedOption
+            };
+            client.publish(TOPIC_PREFIX + 'submit', JSON.stringify(payload));
+        }
+
+        function handleLiveStats(data) {
+            if (hasSubmitted) {
+                document.getElementById('totalBadge').style.display = 'block';
+                document.getElementById('submitCount').innerText = data.totalSubmit || 0;
+            }
+        }
+
+        window.onload = initMQTT;
+    </script>
+</body>
+</html>
