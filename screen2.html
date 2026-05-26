@@ -146,12 +146,27 @@
         }
 
         window.onload = () => {
-            // 自动配置 GitHub 部署的线上观众端地址
-            let userPageUrl = window.location.href.replace('screen2.html', 'index2.html');
-            if(userPageUrl.startsWith('file://')) {
-                // 如果是本地双击测试环境，默认生成占位符
+            let userPageUrl = "";
+            
+            if (window.location.protocol.startsWith('file')) {
+                // 如果是在本地双击打开测试的，默认指向你预期的线上地址（或者你可以改成你本地的 index.html 绝对路径）
                 userPageUrl = "https://huangjpg2-dot.github.io/BiyeGame2.github.io/index2.html";
+            } else {
+                // 如果是线上环境（如 GitHub Pages），动态获取当前网站的根域名和路径，精准拼接为 index.html
+                // 这样可以彻底避免因为 window.location.href 带有参数或特殊后缀导致替换失败的问题
+                const origin = window.location.origin; // 例如: https://huangjpg2-dot.github.io
+                let pathname = window.location.pathname; // 例如: /BiyeGame2.github.io/screen.html
+                
+                // 把末尾的 screen.html 替换为 index.html
+                pathname = pathname.substring(0, pathname.lastIndexOf('/')) + '/index2.html';
+                
+                userPageUrl = origin + pathname;
             }
+        
+            // 可以在控制台打印一下，方便调试检查生成的地址是否正确
+            console.log("观众端扫码跳转目标URL:", userPageUrl);
+        
+            // 渲染二维码
             new QRCode(document.getElementById("qrcode"), {
                 text: userPageUrl,
                 width: 110,
