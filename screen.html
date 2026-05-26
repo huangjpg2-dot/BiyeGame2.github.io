@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>互动答题抽奖 - 现场大屏</title>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        :root { --primary: #3b82f6; --bg: #0f172a; --text: #f8fafc; }
+        body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); padding: 40px; margin: 0; overflow: hidden; height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; }
+        
+        /* 顶部看板 */
+        header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #1e293b; padding-bottom: 20px; }
+        .title-area { font-size: 32px; font-weight: 800; letter-spacing: 2px; background: linear-gradient(to right, #60a5fa, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        
+        /* 双栏布局：左侧答题计票，右侧抽奖与扫码 */
+        .main-layout { display: flex; flex-grow: 1; gap: 40px; margin-top: 30px; height: calc(100vh - 160px); }
+        .left-panel { flex: 1.3; display: flex; flex-direction: column; justify-content: center; }
+        .right-panel { flex: 0.9; display: flex; flex-direction: column; gap: 24px; }
+
+        .question-box { font-size: 38px; font-weight: bold; line-height: 1.4; margin-bottom: 40px; color: #fff; }
+        
+        /* 选项长条 */
+        .option-row { background: #1e293b; padding: 24px; border-radius: 16px; margin-bottom: 20px; position: relative; font-size: 26px; font-weight: 600; display: flex; justify-content: space-between; overflow: hidden; }
+        .bar { position: absolute; left:0; top:0; bottom:0; background: linear-gradient(90deg, rgba(59,130,246,0.3), rgba(59,130,246,0.1)); width: 0%; transition: width 0.4s ease; }
+        .opt-txt { position: relative; z-index: 2; }
+
+        /* 抽奖卡片样式 */
+        .box-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .lucky-card { background: #1e293b; border: 2px solid #334155; border-radius: 16px; padding: 20px; text-align: center; }
+        .lucky-card h3 { margin: 0 0 10px 0; font-size: 22px; color: #94a3b8; }
+        .lucky-name { font-size: 32px; font-weight: 800; color: #f59e0b; text-shadow: 0 0 10px rgba(245,158,11,0.3); }
+
+        /* 右下角固定扫码 */
+        .qr-card { background: white; padding: 20px; border-radius: 16px; display: flex; align-items: center; gap: 20px; color: #0f172a; margin-top: auto; }
+        #qrcode { background: white; padding: 5px; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="title-area">现场大屏互动实时系统</div>
+        <div style="font-size: 24px; color:#94a3b8;">参与人数: <span id="totalTxt" style="color:#fff; font-weight:bold; font-size:32px;">0</span> 人</div>
+    </header>
+
+    <div class="main-layout">
+        <div class="left-panel">
+            <div class="question-box" id="qTitle">等待管理员发布题目...</div>
+            <div id="optionsContainer">
+                </div>
+        </div>
+
+        <div class="right-panel">
+            <div style="font-size:24px; font-weight:bold; color:#60a5fa; margin-bottom:-10px;">🎁 实时中奖名单</div>
+            <div class="box-grid">
+                <div class="lucky-card"><h3>A 选项中奖人</h3><div class="lucky-name" id="luck_A">待抽取</div></div>
+                <div class="lucky-card"><h3>B 选项中奖人</h3><div class="lucky-name" id="luck_B">待抽取</div></div>
+                <div class="lucky-card"><h3>C 选项中奖人</h3><div class="lucky-name" id="luck_C">待抽取</div></div>
+                <div class="lucky-card"><h3>D 选项中奖人</h3><div class="lucky-name" id="luck_D">待抽取</div></div>
+            </div>
+
+            <div class="qr-card">
+                <div id="qrcode"></div>
+                <div>
+                    <div style="font-size: 22px; font-weight: bold;">手机扫码，立刻参与答题</div>
+                    <div style="font-size: 15px; color:#64748b; margin-top:5px;">提交答案后即可进入现场抽奖池</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const TOPIC_PREFIX = "LIVE_QUIZ_ROOM_8888_";
+        const client = mqtt.connect("wss://broker.emqx.io:8084/mqtt", { clientId: 'SCREEN_' + Math.random() });
+        
+        let currentOptionsData = {};
+
+        client.on('connect', () => {
+            client.subscribe([TOPIC_PREFIX + 'question', TOPIC_PREFIX + 'results', TOPIC_PREFIX + 'lucky']);
+        });
+
+        client.on('message', (topic, message) => {
+            const data = JSON.parse(message.toString());
+
+            if (topic === TOPIC_PREFIX + 'question') {
+                if (!data || !data.id) {
+                    document.getElementById('qTitle').innerText = '等待管理员发布新题目...';
+                    document.getElementById('optionsContainer').innerHTML = '';
+                    document.getElementById('totalTxt').innerText = '0';
+                    return;
+                }
+                document.getElementById('qTitle').innerText = data.title;
+                currentOptionsData = data;
+                renderInitialOptions(data);
+            } 
+            else if (topic === TOPIC_PREFIX + 'results') {
+                document.getElementById('totalTxt').innerText = data.total;
+                ['A', 'B', 'C', 'D'].forEach(k => {
+                    const count = data.stats[k] || 0;
+                    const pct = data.total > 0 ? ((count / data.total) * 100).toFixed(0) : 0;
+                    
+                    const bar = document.getElementById(`bar_${k}`);
+                    const num = document.getElementById(`num_${k}`);
+                    if(bar && num) {
+                        bar.style.width = pct + '%';
+                        num.innerText = `${count} 票`;
+                    }
+                });
+            } 
+            else if (topic === TOPIC_PREFIX + 'lucky') {
+                ['A', 'B', 'C', 'D'].forEach(k => {
+                    if(data[k]) {
+                        document.getElementById(`luck_${k}`).innerText = data[k];
+                    }
+                });
+            }
+        });
+
+        function renderInitialOptions(data) {
+            const container = document.getElementById('optionsContainer');
+            container.innerHTML = '';
+            ['A', 'B', 'C', 'D'].forEach(k => {
+                if (data['opt' + k]) {
+                    container.innerHTML += `
+                        <div class="option-row">
+                            <div class="bar" id="bar_${k}"></div>
+                            <span class="opt-txt">${k}. ${data['opt' + k]}</span>
+                            <span class="opt-txt" id="num_${k}" style="color:#60a5fa;">0 票</span>
+                        </div>
+                    `;
+                }
+            });
+        }
+
+        // 自动计算并生成适配当前局域网/互联网域名的手机端观众页二维码
+        window.onload = () => {
+            let userPageUrl = window.location.href.replace('screen.html', 'index.html');
+            // 如果是直接双击打开本地文件的，则默认解析在线公开地址或静态指引
+            if(userPageUrl.startsWith('file://')) {
+                userPageUrl = "https://baidu.com"; // 实际部署时填入你的静态托管服务器地址
+            }
+            new QRCode(document.getElementById("qrcode"), {
+                text: userPageUrl,
+                width: 110,
+                height: 110,
+                colorDark : "#000000",
+                colorLight : "#ffffff",
+                correctLevel : QRCode.CorrectLevel.H
+            });
+        };
+    </script>
+</body>
+</html>

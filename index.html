@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>互动答题抽奖 - 观众端</title>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --success: #16a34a;
+            --bg: #f8fafc;
+            --text: #1e293b;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); padding: 16px; display: flex; flex-direction: column; min-height: 100vh; }
+        
+        /* 顶部状态 */
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; background: white; padding: 12px 16px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .user-badge { background: #e2e8f0; padding: 4px 10px; border-radius: 20px; font-size: 13px; font-weight: 600; color: #475569; }
+        .status-dot { width: 8px; height: 8px; background: #94a3b8; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .status-online { background: var(--success); }
+
+        /* 题目卡片 */
+        .card { background: white; border-radius: 16px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); flex-grow: 1; display: flex; flex-direction: column; justify-content: center; }
+        .waiting-state { text-align: center; color: #64748b; padding: 40px 0; }
+        .question-title { font-size: 18px; font-weight: bold; line-height: 1.5; margin-bottom: 20px; color: #0f172a; }
+        
+        /* 选项按钮 */
+        .options-group { display: flex; flex-direction: column; gap: 12px; width: 100%; }
+        .option-btn { width: 100%; border: 2px solid #e2e8f0; background: white; padding: 14px 16px; border-radius: 12px; text-align: left; font-size: 16px; font-weight: 500; color: var(--text); cursor: pointer; transition: all 0.2s; display: flex; align-items: center; position: relative; overflow: hidden; }
+        .option-btn:active:not(:disabled) { background: #f1f5f9; transform: scale(0.99); }
+        .option-btn.selected { border-color: var(--primary); background: #eff6ff; color: var(--primary); font-weight: 600; }
+        .option-btn:disabled { cursor: not-allowed; opacity: 0.8; }
+        
+        /* 实时进度条 */
+        .progress-bar { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(37, 99, 215, 0.1); width: 0%; transition: width 0.3s ease; z-index: 0; }
+        .option-text { position: relative; z-index: 1; display: flex; justify-content: space-between; width: 100%; }
+
+        /* 提交按钮 */
+        .submit-btn { margin-top: 24px; width: 100%; background: var(--primary); color: white; border: none; padding: 14px; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 12px rgba(37, 99, 215, 0.2); transition: all 0.2s; }
+        .submit-btn:disabled { background: #cbd5e1; box-shadow: none; cursor: not-allowed; }
+        
+        /* 抽奖结果弹窗 */
+        .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1e293b; color: white; padding: 12px 24px; border-radius: 30px; font-size: 14px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3); display: none; z-index: 100; text-align: center; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <div><span class="status-dot" id="statusDot"></span><span id="statusText" style="font-size:14px; color:#64748b;">连接中...</span></div>
+        <div class="user-badge" id="userBadge">用户: ----</div>
+    </div>
+
+    <div class="card" id="mainCard">
+        <div class="waiting-state" id="waitingState">
+            <h2 style="margin-bottom: 10px; color:#334155;">现场互动即将开始</h2>
+            <p style="font-size: 14px;">请静候大屏幕或主持人发布题目...</p>
+        </div>
+
+        <div id="quizState" style="display: none;">
+            <div class="question-title" id="qTitle">加载中...</div>
+            <div class="options-group" id="optionsGroup">
+                </div>
+            <button class="submit-btn" id="submitBtn" onclick="submitAnswer()" disabled>提交答案</button>
+        </div>
+    </div>
+
+    <div class="toast" id="toast">🎉 恭喜你中奖了！请留意大屏幕！</div>
+
+    <script>
+        // 配置公共免签高并发MQTT集群，确保300人毫秒级同步
+        const MQTT_SERVER = "wss://broker.emqx.io:8084/mqtt";
+        const TOPIC_PREFIX = "LIVE_QUIZ_ROOM_8888_"; // 固定房间号
+        
+        // 生成或读取本地唯一用户ID与昵称
+        let userId = localStorage.getItem('quiz_uid') || 'U' + Math.floor(100000 + Math.random() * 900000);
+        localStorage.setItem('quiz_uid', userId);
+        document.getElementById('userBadge').innerText = `编号: ${userId}`;
+
+        let client = null;
+        let currentQuestionId = null;
+        let selectedOption = null;
+        let hasSubmitted = false;
+
+        function initMQTT() {
+            client = mqtt.connect(MQTT_SERVER, { clientId: userId });
+            
+            client.on('connect', () => {
+                document.getElementById('statusDot').classList.add('status-online');
+                document.getElementById('statusText').innerText = '已连接房间';
+                // 订阅管理端发布的题目消息和抽奖消息
+                client.subscribe([TOPIC_PREFIX + 'question', TOPIC_PREFIX + 'results', TOPIC_PREFIX + 'lucky']);
+            });
+
+            client.on('close', () => {
+                document.getElementById('statusDot').classList.remove('status-online');
+                document.getElementById('statusText').innerText = '断开重连中...';
+            });
+
+            client.on('message', (topic, message) => {
+                const data = JSON.parse(message.toString());
+                
+                if (topic === TOPIC_PREFIX + 'question') {
+                    handleNewQuestion(data);
+                } else if (topic === TOPIC_PREFIX + 'results') {
+                    handleLiveStats(data);
+                } else if (topic === TOPIC_PREFIX + 'lucky') {
+                    handleLuckyDraw(data);
+                }
+            });
+        }
+
+        function handleNewQuestion(data) {
+            if (!data || !data.id) {
+                // 进入等待状态
+                document.getElementById('waitingState').style.display = 'block';
+                document.getElementById('quizState').style.display = 'none';
+                currentQuestionId = null;
+                selectedOption = null;
+                hasSubmitted = false;
+                return;
+            }
+
+            // 新题目发布
+            if (currentQuestionId !== data.id) {
+                currentQuestionId = data.id;
+                selectedOption = null;
+                hasSubmitted = false;
+                
+                document.getElementById('waitingState').style.display = 'none';
+                document.getElementById('quizState').style.display = 'block';
+                document.getElementById('qTitle').innerText = data.title;
+                document.getElementById('submitBtn').disabled = true;
+                document.getElementById('submitBtn').innerText = '提交答案';
+
+                const group = document.getElementById('optionsGroup');
+                group.innerHTML = '';
+                ['A', 'B', 'C', 'D'].forEach(key => {
+                    if(data['opt' + key]) {
+                        group.innerHTML += `
+                            <button class="option-btn" id="btn_${key}" onclick="selectOption('${key}')">
+                                <div class="progress-bar" id="progress_${key}"></div>
+                                <div class="option-text">
+                                    <span>${key}. ${data['opt' + key]}</span>
+                                    <span id="val_${key}" style="display:none; font-weight:600;">0票</span>
+                                </div>
+                            </button>
+                        `;
+                    }
+                });
+            }
+        }
+
+        function selectOption(key) {
+            if (hasSubmitted) return;
+            selectedOption = key;
+            document.querySelectorAll('.option-btn').forEach(b => b.classList.remove('selected'));
+            document.getElementById(`btn_${key}`).classList.add('selected');
+            document.getElementById('submitBtn').disabled = false;
+        }
+
+        function submitAnswer() {
+            if (!currentQuestionId || !selectedOption || hasSubmitted) return;
+            hasSubmitted = true;
+            document.getElementById('submitBtn').disabled = true;
+            document.getElementById('submitBtn').innerText = '答案已提交';
+            
+            // 锁定所有按钮
+            document.querySelectorAll('.option-btn').forEach(b => b.disabled = true);
+
+            // 发送答题数据回集群
+            const payload = {
+                qid: currentQuestionId,
+                uid: userId,
+                option: selectedOption
+            };
+            client.publish(TOPIC_PREFIX + 'submit', JSON.stringify(payload));
+        }
+
+        function handleLiveStats(data) {
+            // 收到全局实时投票统计更新数据
+            if (!hasSubmitted) return; // 没提交前不展示统计数据，防止作弊跟随
+            
+            const total = data.total || 1;
+            ['A', 'B', 'C', 'D'].forEach(key => {
+                const count = data.stats[key] || 0;
+                const pct = ((count / total) * 100).toFixed(0);
+                
+                const pBar = document.getElementById(`progress_${key}`);
+                const vText = document.getElementById(`val_${key}`);
+                if(pBar && vText) {
+                    pBar.style.width = pct + '%';
+                    vText.innerText = `${count} 票 (${pct}%)`;
+                    vText.style.display = 'block';
+                }
+            });
+        }
+
+        function handleLuckyDraw(data) {
+            // 判断自己是否中奖
+            if (data && Object.values(data).includes(userId)) {
+                const toast = document.getElementById('toast');
+                toast.style.display = 'block';
+                // 震动反馈
+                if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+            }
+        }
+
+        window.onload = initMQTT;
+    </script>
+</body>
+</html>
