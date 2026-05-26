@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>互动答题抽奖系统 - 管理后台</title>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        :root { --primary: #2563eb; --danger: #dc2626; --bg: #f1f5f9; }
+        body { font-family: system-ui; background: var(--bg); color: #1e293b; padding: 24px; margin:0; }
+        .container { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+        header { background: white; padding: 16px 24px; border-radius: 12px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .card { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+        h2 { margin-top: 0; margin-bottom: 20px; font-size: 18px; border-left: 4px solid var(--primary); padding-left: 8px; }
+        .form-group { margin-bottom: 16px; }
+        label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 14px; }
+        input[type="text"] { width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; box-sizing: border-box; }
+        .btn-group { display: flex; gap: 12px; margin-top: 20px; }
+        button { flex: 1; padding: 12px; border: none; border-radius: 6px; font-size: 14px; font-weight: bold; cursor: pointer; transition: all 0.2s; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-secondary { background: #64748b; color: white; }
+        .btn-toggle { background: #0ea5e9; color: white; padding: 14px; width: 100%; font-size: 15px; margin-bottom: 15px; }
+        button:active { filter: brightness(0.9); }
+        .stat-item { background: #f8fafc; padding: 12px; border-radius: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; font-weight: 500; }
+        .lucky-box { border: 2px dashed #cbd5e1; padding: 16px; border-radius: 8px; text-align: center; background: #f8fafc; font-size: 20px; font-weight: bold; color: var(--primary); }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1 style="font-size: 20px;">🎯 现场互动答题后台控制系统（双选项版）</h1>
+        <div>系统状态: <span id="status" style="font-weight: bold; color:#16a34a;">连通中...</span> | 房间总提交: <span id="totalCount" style="font-weight: bold; color:var(--primary);">0</span> 人</div>
+    </header>
+
+    <div class="container">
+        <div class="card">
+            <h2>第一步：编辑发布题目</h2>
+            <div class="form-group">
+                <label>题目名称</label>
+                <input type="text" id="qTitle" value="准备毕业的小明，应该直接参加工作还是继续深造？">
+            </div>
+            <div class="form-group"><label>选项 A</label><input type="text" id="optA" value="直接投身职场，积累实践经验"></div>
+            <div class="form-group"><label>选项 B</label><input type="text" id="optB" value="继续深造读研，提升学术背景"></div>
+            
+            <div class="btn-group">
+                <button class="btn-primary" onclick="publishQuestion()">📢 一键发布/重置当前题</button>
+                <button class="btn-danger" onclick="clearAll()">🔄 切换并清空下一题</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>第二步：大屏显示控制与数据监控</h2>
+            <button class="btn-toggle" id="toggleDisplayBtn" onclick="toggleScreenVisibility()">👁️ 大屏当前状态：显示实时投票结果</button>
+
+            <div style="margin-bottom: 20px;">
+                <div class="stat-item"><span>A 选项当前得票：</span><span id="stat_A">0 票</span></div>
+                <div class="stat-item"><span>B 选项当前得票：</span><span id="stat_B">0 票</span></div>
+            </div>
+
+            <h2>第三步：一键触发随机抽奖</h2>
+            <button class="btn-primary" style="background:#16a34a; width:100%; font-size:16px; padding:14px;" onclick="drawLucky()">🎲 触发A/B双组交叉随机抽奖</button>
+            
+            <h2 style="margin-top: 20px;">当前抽中结果存根</h2>
+            <div class="lucky-box" id="luckyResult">暂未触发抽奖</div>
+        </div>
+    </div>
+
+    <script>
+        const TOPIC_PREFIX = "LIVE_QUIZ_ROOM_8888_";
+        const client = mqtt.connect("wss://broker.emqx.io:8084/mqtt", { clientId: 'ADMIN_' + Math.random() });
+
+        let votes = {}; 
+        let currentQid = Date.now().toString();
+        let isScreenVisible = true; // 默认大屏显示结果
+
+        client.on('connect', () => {
+            document.getElementById('status').innerText = '已就绪';
+            client.subscribe(TOPIC_PREFIX + 'submit');
+        });
+
+        client.on('message', (topic, message) => {
+            if (topic === TOPIC_PREFIX + 'submit') {
+                const raw = JSON.parse(message.toString());
+                if(raw.qid === currentQid) {
+                    votes[raw.uid] = raw.option;
+                    updateStats();
+                }
+            }
+        });
+
+        function updateStats() {
+            let stats = { A: 0, B: 0 };
+            let total = 0;
+            for (let uid in votes) {
+                if(stats[votes[uid]] !== undefined) {
+                    stats[votes[uid]]++;
+                    total++;
+                }
+            }
+            document.getElementById('totalCount').innerText = total;
+            ['A', 'B'].forEach(k => {
+                document.getElementById(`stat_${k}`).innerText = `${stats[k]} 票`;
+            });
+
+            // 广播实时计票结果
+            client.publish(TOPIC_PREFIX + 'results', JSON.stringify({ stats, total }));
+        }
+
+        function publishQuestion() {
+            const data = {
+                id: currentQid,
+                title: document.getElementById('qTitle').value,
+                optA: document.getElementById('optA').value,
+                optB: document.getElementById('optB').value
+            };
+            client.publish(TOPIC_PREFIX + 'question', JSON.stringify(data));
+            // 发布时同时联动的把显隐指令再广播一次
+            sendVisibilityCommand();
+            alert('当前双选题目发布成功！');
+        }
+
+        // 切换大屏显隐状态
+        function toggleScreenVisibility() {
+            isScreenVisible = !isScreenVisible;
+            const btn = document.getElementById('toggleDisplayBtn');
+            if(isScreenVisible) {
+                btn.innerText = "👁️ 大屏当前状态：显示实时投票结果";
+                btn.style.background = "#0ea5e9";
+            } else {
+                btn.innerText = "🙈 大屏当前状态：已隐藏实时投票结果";
+                btn.style.background = "#64748b";
+            }
+            sendVisibilityCommand();
+        }
+
+        function sendVisibilityCommand() {
+            client.publish(TOPIC_PREFIX + 'visible', JSON.stringify({ visible: isScreenVisible }));
+        }
+
+        function drawLucky() {
+            let pool = { A: [], B: [] };
+            for (let uid in votes) {
+                if(pool[votes[uid]]) pool[votes[uid]].push(uid);
+            }
+
+            let luckyResult = { A: '无人中奖', B: '无人中奖' };
+            ['A', 'B'].forEach(k => {
+                if(pool[k].length > 0) {
+                    const idx = Math.floor(Math.random() * pool[k].length);
+                    luckyResult[k] = pool[k][idx];
+                }
+            });
+
+            document.getElementById('luckyResult').innerHTML = `A组中奖: ${luckyResult.A} | B组中奖: ${luckyResult.B}`;
+            client.publish(TOPIC_PREFIX + 'lucky', JSON.stringify(luckyResult));
+        }
+
+        function clearAll() {
+            if(confirm('确定切换下一题吗？这将清空当前所有选手的答题状态与大屏数据。')) {
+                currentQid = Date.now().toString();
+                votes = {};
+                updateStats();
+                client.publish(TOPIC_PREFIX + 'question', JSON.stringify({})); 
+                client.publish(TOPIC_PREFIX + 'lucky', JSON.stringify({ A: '待抽奖', B: '待抽奖' }));
+                document.getElementById('luckyResult').innerText = "已重置新题目环境";
+            }
+        }
+    </script>
+</body>
+</html>
