@@ -132,13 +132,28 @@
             });
         }
 
-        // 自动计算并生成适配当前局域网/互联网域名的手机端观众页二维码
-        window.onload = () => {
-            let userPageUrl = window.location.href.replace('screen.html', 'index.html');
-            // 如果是直接双击打开本地文件的，则默认解析在线公开地址或静态指引
-            if(userPageUrl.startsWith('file://')) {
-                userPageUrl = "https://baidu.com"; // 实际部署时填入你的静态托管服务器地址
-            }
+        // v1 自动计算并生成适配当前局域网/互联网域名的手机端观众页二维码
+        // window.onload = () => {
+        //     let userPageUrl = window.location.href.replace('screen.html', 'index.html');
+        //     // 如果是直接双击打开本地文件的，则默认解析在线公开地址或静态指引
+        //     if(userPageUrl.startsWith('file://')) {
+        //         userPageUrl = "https://baidu.com"; // 实际部署时填入你的静态托管服务器地址
+        //     }
+        //     new QRCode(document.getElementById("qrcode"), {
+        //         text: userPageUrl,
+        //         width: 110,
+        //         height: 110,
+        //         colorDark : "#000000",
+        //         colorLight : "#ffffff",
+        //         correctLevel : QRCode.CorrectLevel.H
+        //     });
+        // };
+
+        // v2 修改 screen.html 最底部的 window.onload 部分
+            window.onload = () => {
+            // 【请将下方链接替换为你自己在第二步中获取到的 GitHub Pages 实际观众端网址】
+                let userPageUrl = "https://huangjpg2-dot.github.io/BiyeGame2.github.io/index.html"; 
+    
             new QRCode(document.getElementById("qrcode"), {
                 text: userPageUrl,
                 width: 110,
