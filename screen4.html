@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>互动答题抽奖 - 现场大屏 V4</title>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        :root { --primary: #3b82f6; --bg: #0f172a; --text: #f8fafc; }
+        body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); padding: 40px; margin: 0; overflow: hidden; height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; }
+        
+        header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #1e293b; padding-bottom: 20px; }
+        .title-area { font-size: 32px; font-weight: 800; letter-spacing: 2px; background: linear-gradient(to right, #60a5fa, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        
+        .counter-group { display: flex; gap: 30px; align-items: center; }
+        .counter-item { font-size: 20px; color: #94a3b8; }
+        .counter-val { color: #fff; font-weight: bold; font-size: 32px; }
+
+        .main-layout { display: flex; flex-grow: 1; gap: 40px; margin-top: 30px; height: calc(100vh - 160px); }
+        .left-panel { flex: 1.2; display: flex; flex-direction: column; justify-content: center; }
+        .right-panel { flex: 1.0; display: flex; flex-direction: column; gap: 24px; }
+
+        .question-box { font-size: 38px; font-weight: bold; line-height: 1.4; margin-bottom: 40px; color: #fff; }
+        
+        .option-row { background: #1e293b; padding: 28px; border-radius: 16px; margin-bottom: 24px; position: relative; font-size: 28px; font-weight: 600; display: flex; justify-content: space-between; overflow: hidden; }
+        .bar { position: absolute; left:0; top:0; bottom:0; background: linear-gradient(90deg, rgba(59,130,246,0.3), rgba(59,130,246,0.1)); width: 0%; transition: width 0.4s ease; }
+        .opt-txt { position: relative; z-index: 2; }
+        
+        .blur-text { filter: blur(5px); opacity: 0.3; }
+
+        .box-grid { display: grid; grid-template-columns: 1fr; gap: 20px; }
+        .lucky-card { background: #1e293b; border: 2px solid #334155; border-radius: 16px; padding: 24px; text-align: center; }
+        .lucky-card h3 { margin: 0 0 12px 0; font-size: 24px; color: #94a3b8; }
+        .lucky-name { font-size: 32px; font-weight: 800; color: #f59e0b; text-shadow: 0 0 10px rgba(245,158,11,0.3); line-height: 1.4; word-break: break-all; }
+
+        .qr-card { background: white; padding: 20px; border-radius: 16px; display: flex; align-items: center; gap: 20px; color: #0f172a; margin-top: auto; }
+        #qrcode { background: white; padding: 5px; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="title-area">现场互动答题抽奖系统</div>
+        <div class="counter-group">
+            <div class="counter-item">参与人数: <span id="totalJoinTxt" class="counter-val" style="color:#10b981;">0</span> 人</div>
+            <div class="counter-item">本轮已提交: <span id="totalSubmitTxt" class="counter-val" style="color:#3b82f6;">0</span> 人</div>
+        </div>
+    </header>
+
+    <div class="main-layout">
+        <div class="left-panel">
+            <div class="question-box" id="qTitle">等待管理员发布题目...</div>
+            <div id="optionsContainer">
+                </div>
+        </div>
+
+        <div class="right-panel">
+            <div style="font-size:24px; font-weight:bold; color:#60a5fa; margin-bottom:-10px;">🎁 现场中奖名单公布</div>
+            <div class="box-grid">
+                <div class="lucky-card"><h3>A 选项最终中奖人</h3><div class="lucky-name" id="luck_A">待抽取</div></div>
+                <div class="lucky-card"><h3>B 选项最终中奖人</h3><div class="lucky-name" id="luck_B">待抽取</div></div>
+            </div>
+
+            <div class="qr-card">
+                <div id="qrcode"></div>
+                <div>
+                    <div style="font-size: 22px; font-weight: bold;">手机扫码，立刻参与答题</div>
+                    <div style="font-size: 15px; color:#64748b; margin-top:5px;">请确保点击截屏保存，即可切入中奖池</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const TOPIC_PREFIX = "LIVE_QUIZ_ROOM_8888_";
+        const client = mqtt.connect("wss://broker.emqx.io:8084/mqtt", { clientId: 'SCREEN_' + Math.random() });
+        
+        let lastStatsData = { stats: { A: 0, B: 0 }, totalSubmit: 0, totalJoin: 0 };
+        let showResultFlag = true; 
+        let activeQuestionId = null; 
+
+        client.on('connect', () => {
+            client.subscribe([TOPIC_PREFIX + 'question', TOPIC_PREFIX + 'results', TOPIC_PREFIX + 'lucky', TOPIC_PREFIX + 'visible']);
+        });
+
+        client.on('message', (topic, message) => {
+            const data = JSON.parse(message.toString());
+
+            if (topic === TOPIC_PREFIX + 'question') {
+                if (!data || !data.id) {
+                    document.getElementById('qTitle').innerText = '等待管理员发布新题目...';
+                    document.getElementById('optionsContainer').innerHTML = '';
+                    document.getElementById('totalSubmitTxt').innerText = '0';
+                    activeQuestionId = null;
+                    return;
+                }
+                
+                // 只有当题目确实切换时才重绘初始骨架，防止后台2秒同步心跳导致的重绘闪烁
+                if (activeQuestionId !== data.id) {
+                    activeQuestionId = data.id;
+                    document.getElementById('qTitle').innerText = data.title;
+                    renderInitialOptions(data);
+                }
+            } 
+            else if (topic === TOPIC_PREFIX + 'results') {
+                lastStatsData = data;
+                renderUpdateStats();
+            } 
+            else if (topic === TOPIC_PREFIX + 'visible') {
+                showResultFlag = data.visible;
+                renderUpdateStats();
+            }
+            else if (topic === TOPIC_PREFIX + 'lucky') {
+                ['A', 'B'].forEach(k => {
+                    if(data[k]) document.getElementById(`luck_${k}`).innerText = data[k];
+                });
+            }
+        });
+
+        function renderInitialOptions(data) {
+            const container = document.getElementById('optionsContainer');
+            container.innerHTML = '';
+            ['A', 'B'].forEach(k => {
+                if (data['opt' + k]) {
+                    container.innerHTML += `
+                        <div class="option-row">
+                            <div class="bar" id="bar_${k}"></div>
+                            <span class="opt-txt">${k}. ${data['opt' + k]}</span>
+                            <span class="opt-txt" id="num_${k}" style="color:#60a5fa;">0 票</span>
+                        </div>
+                    `;
+                }
+            });
+        }
+
+        function renderUpdateStats() {
+            document.getElementById('totalJoinTxt').innerText = lastStatsData.totalJoin || 0;
+            document.getElementById('totalSubmitTxt').innerText = lastStatsData.totalSubmit || 0;
+            
+            ['A', 'B'].forEach(k => {
+                const count = lastStatsData.stats[k] || 0;
+                const pct = lastStatsData.totalSubmit > 0 ? ((count / lastStatsData.totalSubmit) * 100).toFixed(0) : 0;
+                
+                const bar = document.getElementById(`bar_${k}`);
+                const num = document.getElementById(`num_${k}`);
+                
+                if(bar && num) {
+                    if (showResultFlag) {
+                        bar.style.width = pct + '%';
+                        num.innerText = `${count} 票 (${pct}%)`;
+                        num.classList.remove('blur-text');
+                    } else {
+                        bar.style.width = '0%';
+                        num.innerText = `？ 票`;
+                        num.classList.add('blur-text');
+                    }
+                }
+            });
+        }
+
+        window.onload = () => {
+            let userPageUrl = "";
+            // 自动判断环境：本地直接打开或者托管在 GitHub Pages 环境
+            if (window.location.protocol.startsWith('file')) {
+                // 如果是本地测试，降级指向你的线上默认路径，保证手机能扫到
+                userPageUrl = "https://huangjpg2-dot.github.io/BiyeGame2.github.io/index4.html";
+            } else {
+                // 如果已经是线上环境，自动捕获同目录下的 index4.html
+                const origin = window.location.origin; 
+                let pathname = window.location.pathname; 
+                pathname = pathname.substring(0, pathname.lastIndexOf('/')) + '/index4.html';
+                userPageUrl = origin + pathname;
+            }
+            
+            console.log("大屏自动定位的观众端连接:", userPageUrl);
+
+            new QRCode(document.getElementById("qrcode"), {
+                text: userPageUrl,
+                width: 110,
+                height: 110,
+                colorDark : "#000000",
+                colorLight : "#ffffff",
+                correctLevel : QRCode.CorrectLevel.H
+            });
+        };
+    </script>
+</body>
+</html>
