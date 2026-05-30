@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>互动答题抽奖系统 - 管理后台 V5</title>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        :root { --primary: #2563eb; --danger: #dc2626; --bg: #f1f5f9; }
+        body { font-family: system-ui; background: var(--bg); color: #1e293b; padding: 24px; margin:0; }
+        .container { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+        header { background: white; padding: 16px 24px; border-radius: 12px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .card { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+        h2 { margin-top: 0; margin-bottom: 20px; font-size: 18px; border-left: 4px solid var(--primary); padding-left: 8px; }
+        .form-group { margin-bottom: 16px; }
+        label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 14px; }
+        input[type="text"] { width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; box-sizing: border-box; }
+        .btn-group { display: flex; gap: 12px; margin-top: 20px; }
+        button { flex: 1; padding: 12px; border: none; border-radius: 6px; font-size: 14px; font-weight: bold; cursor: pointer; transition: all 0.2s; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-toggle { background: #0ea5e9; color: white; padding: 14px; width: 100%; font-size: 15px; margin-bottom: 15px; }
+        button:active { filter: brightness(0.9); }
+        .stat-item { background: #f8fafc; padding: 12px; border-radius: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; font-weight: 500; }
+        .lucky-box { border: 2px dashed #cbd5e1; padding: 16px; border-radius: 8px; text-align: center; background: #f8fafc; font-size: 18px; font-weight: bold; color: var(--primary); line-height: 1.6; }
+        
+        .radio-group { display: flex; gap: 16px; margin: 8px 0 16px 0; background: #f8fafc; padding: 10px; border-radius: 8px; border: 1px solid #e2e8f0; }
+        .radio-item { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; cursor: pointer; }
+
+        /* 新增：快捷题目按钮样式 */
+        .preset-container { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; background: #f8fafc; padding: 12px; border-radius: 8px; border: 1px dashed #cbd5e1; }
+        .btn-preset { background: #fff; border: 1px solid #cbd5e1; padding: 6px 12px; font-size: 12px; font-weight: 600; color: #475569; border-radius: 4px; flex: none; transition: all 0.15s; }
+        .btn-preset:hover { border-color: var(--primary); color: var(--primary); background: #eff6ff; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1 style="font-size: 20px;">🎯 现场互动控制中心 (断线自动同步版 V5)</h1>
+        <div style="font-size: 15px;">
+            系统状态: <span id="status" style="font-weight: bold; color:#16a34a;">连通中...</span> | 
+            参与人数: <span id="totalJoinCount" style="font-weight: bold; color:#16a34a;">0</span> 人 | 
+            本轮已提交: <span id="totalSubmitCount" style="font-weight: bold; color:var(--primary);">0</span> 人
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="card">
+            <h2>第一步：编辑发布题目</h2>
+            
+            <!-- 新增：快捷载入预设题目区域 -->
+            <label>⚡ 快捷载入预设题目</label>
+            <div class="preset-container">
+                <button class="btn-preset" onclick="loadPreset(1)">第一题</button>
+                <button class="btn-preset" onclick="loadPreset(2)">第二题</button>
+                <button class="btn-preset" onclick="loadPreset(3)">第三题</button>
+                <button class="btn-preset" onclick="loadPreset(4)">第四题</button>
+                <button class="btn-preset" onclick="loadPreset(5)">第五题</button>
+            </div>
+
+            <div class="form-group">
+                <label>题目名称</label>
+                <input type="text" id="qTitle" value="准备毕业的小明，应该直接参加工作还是继续深造？">
+            </div>
+            <div class="form-group"><label>选项 A</label><input type="text" id="optA" value="直接投身职场，积累实践经验"></div>
+            <div class="form-group"><label>选项 B</label><input type="text" id="optB" value="继续深造读研，提升学术背景"></div>
+            
+            <div class="btn-group">
+                <button class="btn-primary" onclick="publishQuestion()">📢 一键发布并开启常态同步</button>
+                <button class="btn-danger" onclick="clearAll()">🔄 切换并清空下一题</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>第二步:: 大屏显示控制与数据监控</h2>
+            <button class="btn-toggle" id="toggleDisplayBtn" onclick="toggleScreenVisibility()">👁️ 大屏当前状态：显示实时投票结果</button>
+
+            <div style="margin-bottom: 20px;">
+                <div class="stat-item"><span>A 选项当前有效得票：</span><span id="stat_A">0 票</span></div>
+                <div class="stat-item"><span>B 选项当前有效得票：</span><span id="stat_B">0 票</span></div>
+            </div>
+
+            <h2>第三步：设置名额并随机抽奖</h2>
+            
+            <label>⏱️ A 选项抽中人数设置</label>
+            <div class="radio-group">
+                <label class="radio-item"><input type="radio" name="countA" value="1" checked> 抽取 1 人</label>
+                <label class="radio-item"><input type="radio" name="countA" value="2"> 抽取 2 人</label>
+            </div>
+
+            <label>⏱️ B 选项抽中人数设置</label>
+            <div class="radio-group">
+                <label class="radio-item"><input type="radio" name="countB" value="1" checked> 抽取 1 人</label>
+                <label class="radio-item"><input type="radio" name="countB" value="2"> 抽取 2 人</label>
+            </div>
+
+            <button class="btn-primary" style="background:#16a34a; width:100%; font-size:16px; padding:14px;" onclick="drawLucky()">🎲 触发指定数量交叉抽奖</button>
+            
+            <h2 style="margin-top: 20px;">当前抽中结果存根</h2>
+            <div class="lucky-box" id="luckyResult">暂未触发抽奖</div>
+        </div>
+    </div>
+
+    <script>
+        const TOPIC_PREFIX = "LIVE_QUIZ_ROOM_8888_";
+        const client = mqtt.connect("wss://broker.emqx.io:8084/mqtt", { clientId: 'ADMIN_' + Math.random() });
+
+        let totalParticipants = new Set(); 
+        let currentVotes = {};            
+        let currentQid = Date.now().toString();
+        let isScreenVisible = true;
+        let syncTimer = null; // 用于存储题目常态循环广播定时器
+
+        // 新增：预设题目数据源
+        const presets = {
+            1: { title: "今晚你更想要？", a: "抽中大奖", b: "美美地看节目" },
+            2: { title: "在华师的这几年，你更像？", a: "（计划型）J人", b: "（随缘型）P人" },
+            3: { title: "你更怕？", a: "软件突然崩溃（但没保存）", b: "数据突然丢失" },
+            4: { title: "如果回到大一，你会选择？", a: "更努力一点", b: "更快乐一点" },
+            5: { title: "你还想要再体测一次吗？", a: "我还要我还要❤", b: "我不要！！！❌" }
+        };
+
+        // 新增：点击按钮载入题目到输入框的函数
+        function loadPreset(index) {
+            if (presets[index]) {
+                document.getElementById('qTitle').value = presets[index].title;
+                document.getElementById('optA').value = presets[index].a;
+                document.getElementById('optB').value = presets[index].b;
+            }
+        }
+
+        client.on('connect', () => {
+            document.getElementById('status').innerText = '已就绪';
+            client.subscribe([TOPIC_PREFIX + 'submit', TOPIC_PREFIX + 'join']);
+        });
+
+        client.on('message', (topic, message) => {
+            const raw = JSON.parse(message.toString());
+            
+            if (topic === TOPIC_PREFIX + 'join') {
+                totalParticipants.add(raw.uid);
+                broadcastStats();
+            } 
+            else if (topic === TOPIC_PREFIX + 'submit') {
+                if(raw.qid === currentQid) {
+                    currentVotes[raw.uid] = raw.option;
+                    totalParticipants.add(raw.uid); 
+                    broadcastStats();
+                }
+            }
+        });
+
+        function broadcastStats() {
+            let stats = { A: 0, B: 0 };
+            let totalSubmit = 0;
+            for (let uid in currentVotes) {
+                if(stats[currentVotes[uid]] !== undefined) {
+                    stats[currentVotes[uid]]++;
+                    totalSubmit++;
+                }
+            }
+            
+            document.getElementById('totalJoinCount').innerText = totalParticipants.size;
+            document.getElementById('totalSubmitCount').innerText = totalSubmit;
+            
+            ['A', 'B'].forEach(k => {
+                document.getElementById(`stat_${k}`).innerText = `${stats[k]} 票`;
+            });
+
+            client.publish(TOPIC_PREFIX + 'results', JSON.stringify({ 
+                stats, 
+                totalSubmit, 
+                totalJoin: totalParticipants.size 
+            }));
+        }
+
+        // 获取当前最新数据帧结构
+        function getQuestionPayload() {
+            return {
+                id: currentQid,
+                title: document.getElementById('qTitle').value,
+                optA: document.getElementById('optA').value,
+                optB: document.getElementById('optB').value
+            };
+        }
+
+        function publishQuestion() {
+            // 清理旧定时器，防止叠加冲突
+            if(syncTimer) clearInterval(syncTimer);
+
+            // 1. 瞬间发送第一次题目广播
+            const data = getQuestionPayload();
+            client.publish(TOPIC_PREFIX + 'question', JSON.stringify(data));
+            sendVisibilityCommand();
+
+            // 2. 开启每隔 2 秒钟的自动静默同步，专门用来接纳任何中途离线、刷新、断网重新进入的观众
+            syncTimer = setInterval(() => {
+                if (client && client.connected && currentQid) {
+                    client.publish(TOPIC_PREFIX + 'question', JSON.stringify(getQuestionPayload()));
+                }
+            }, 2000);
+
+            alert('新题目发布成功！当前断线重连同步已自动激活！');
+        }
+
+        function toggleScreenVisibility() {
+            isScreenVisible = !isScreenVisible;
+            const btn = document.getElementById('toggleDisplayBtn');
+            btn.innerText = isScreenVisible ? "👁️ 大屏当前状态：显示实时投票结果" : "🙈 大屏当前状态：已隐藏实时投票结果";
+            btn.style.background = isScreenVisible ? "#0ea5e9" : "#64748b";
+            sendVisibilityCommand();
+        }
+
+        function sendVisibilityCommand() {
+            client.publish(TOPIC_PREFIX + 'visible', JSON.stringify({ visible: isScreenVisible }));
+        }
+
+        function drawLucky() {
+            let pool = { A: [], B: [] };
+            for (let uid in currentVotes) {
+                if(pool[currentVotes[uid]]) pool[currentVotes[uid]].push(uid);
+            }
+
+            const numA = parseInt(document.querySelector('input[name="countA"]:checked').value);
+            const numB = parseInt(document.querySelector('input[name="countB"]:checked').value);
+
+            let luckyResult = { A: [], B: [] };
+
+            let poolA = [...pool.A];
+            for(let i=0; i < numA; i++) {
+                if(poolA.length > 0) {
+                    const idx = Math.floor(Math.random() * poolA.length);
+                    luckyResult.A.push(poolA.splice(idx, 1)[0]);
+                }
+            }
+
+            let poolB = [...pool.B];
+            for(let i=0; i < numB; i++) {
+                if(poolB.length > 0) {
+                    const idx = Math.floor(Math.random() * poolB.length);
+                    luckyResult.B.push(poolB.splice(idx, 1)[0]);
+                }
+            }
+
+            const displayA = luckyResult.A.length > 0 ? luckyResult.A.join('，') : '无人中奖';
+            const displayB = luckyResult.B.length > 0 ? luckyResult.B.join('，') : '无人中奖';
+
+            document.getElementById('luckyResult').innerHTML = `
+                A组抽中(${numA}人): <span style="color:var(--danger)">${displayA}</span><br>
+                B组抽中(${numB}人): <span style="color:var(--danger)">${displayB}</span>
+            `;
+
+            client.publish(TOPIC_PREFIX + 'lucky', JSON.stringify({
+                A: displayA,
+                B: displayB
+            }));
+        }
+
+        function clearAll() {
+            if(confirm('确定切换下一题吗？这将停止当前定时同步，清空本轮提交记录。')) {
+                if(syncTimer) {
+                    clearInterval(syncTimer);
+                    syncTimer = null;
+                }
+                currentQid = Date.now().toString();
+                currentVotes = {};
+                broadcastStats();
+                client.publish(TOPIC_PREFIX + 'question', JSON.stringify({})); 
+                client.publish(TOPIC_PREFIX + 'lucky', JSON.stringify({ A: '待抽取', B: '待抽取' }));
+                document.getElementById('luckyResult').innerText = "已重置本轮题目环境";
+            }
+        }
+    </script>
+</body>
+</html>
